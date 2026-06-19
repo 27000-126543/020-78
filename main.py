@@ -4,20 +4,30 @@ from datetime import datetime
 
 from compliance_checker.rumor_checker import check_rumors, summarize_rumors_by_scope, list_departments
 from compliance_checker.chat_analyzer import analyze_chat_file, analyze_chat_folder
-from compliance_checker.report_generator import generate_daily_report, generate_short_report
+from compliance_checker.report_generator import (
+    generate_daily_report, generate_short_report, generate_trend_report
+)
+from compliance_checker.ledger import RiskLedger, STATUS_PENDING, STATUS_REMINDED, STATUS_RECTIFIED, ALL_STATUSES
+
+
+LEDGER_FILE = "risk_ledger.json"
 
 
 def print_header(session_info):
     print()
     print("=" * 60)
-    print("        证券营业部合规巡检工具 v1.1")
+    print("        证券营业部合规巡检工具 v1.2")
     print("=" * 60)
-    if session_info.get("department"):
-        dept = session_info["department"]
-        rumor_done = "✓" if session_info.get("rumor_done") else "✗"
-        chat_done = "✓" if session_info.get("chat_done") else "✗"
-        print(f"  当前营业部：{dept}    舆情[{rumor_done}]  群聊[{chat_done}]")
-        print("=" * 60)
+    dept = session_info.get("department")
+    rumor_done = "✓" if session_info.get("rumor_done") else "✗"
+    chat_done = "✓" if session_info.get("chat_done") else "✗"
+    ledger = session_info.get("ledger")
+    ledger_count = len(ledger.items) if ledger else 0
+    if dept:
+        print(f"  {dept}  舆情[{rumor_done}]  群聊[{chat_done}]  台账[{ledger_count}条]")
+    else:
+        print(f"  舆情[{rumor_done}]  群聊[{chat_done}]  台账[{ledger_count}条]")
+    print("=" * 60)
     print()
 
 
@@ -26,8 +36,9 @@ def print_menu():
     print()
     print("  1. 市场传闻与舆情排查")
     print("  2. 群聊文本核查")
-    print("  3. 生成合规日报")
-    print("  4. 设置营业部名称")
+    print("  3. 风险台账管理")
+    print("  4. 生成合规日报 / 趋势汇总")
+    print("  5. 设置营业部名称")
     print("  0. 退出")
     print()
 
@@ -55,6 +66,21 @@ def risk_label(level):
     }
     text, color = labels.get(level, ("【未知】", "blue"))
     return color_text(text, color)
+
+
+def status_label(status):
+    colors = {
+        STATUS_PENDING: "yellow",
+        STATUS_REMINDED: "cyan",
+        STATUS_RECTIFIED: "green",
+    }
+    return color_text(f"[{status}]", colors.get(status, "blue"))
+
+
+def _save_ledger(session_info):
+    ledger = session_info.get("ledger")
+    if ledger:
+        ledger.save_to_file(LEDGER_FILE)
 
 
 def run_set_department(session_info):
@@ -100,17 +126,26 @@ def run_rumor_check(session_info):
     print("正在排查中...")
     print()
 
-    data = check_rumors(keyword=keyword)
+    try:
+        data = check_rumors(keyword=keyword)
+    except Exception as e:
+        print(color_text(f"排查异常：{str(e)}", "red"))
+        print(color_text("已返回菜单，请重新操作。", "yellow"))
+        print()
+        return None
+
     results = data["results"]
 
     if not results:
-        print(color_text("未发现相关风险信息。", "green"))
+        print(color_text(f"未发现相关风险信息。（关键词：{keyword or '全量'}）", "green"))
         scope_summary = summarize_rumors_by_scope(data)
-        if scope_summary:
-            print(f"排查覆盖：营业部{scope_summary['dept_count']}个 / "
-                  f"经理{scope_summary['manager_count']}人 / "
-                  f"股票{scope_summary['stock_count']}只 / "
-                  f"客户群{scope_summary['group_count']}个")
+        if scope_summary and scope_summary.get("dept_count", 0) > 0:
+            print(f"排查覆盖：营业部{scope_summary.get('dept_count', 0)}个 / "
+                  f"经理{scope_summary.get('manager_count', 0)}人 / "
+                  f"股票{scope_summary.get('stock_count', 0)}只 / "
+                  f"客户群{scope_summary.get('group_count', 0)}个")
+        else:
+            print("提示：当前关键词未匹配到任何营业部、客户经理或股票，请检查输入。")
         print()
         session_info["rumor_data"] = data
         session_info["rumor_done"] = True
@@ -119,10 +154,10 @@ def run_rumor_check(session_info):
     scope_summary = summarize_rumors_by_scope(data)
     if scope_summary:
         print(color_text(
-            f"覆盖范围：{scope_summary['dept_count']}个营业部 / "
-            f"{scope_summary['manager_count']}名客户经理 / "
-            f"{scope_summary['stock_count']}只股票标的 / "
-            f"{scope_summary['group_count']}个客户群",
+            f"覆盖范围：{scope_summary.get('dept_count', 0)}个营业部 / "
+            f"{scope_summary.get('manager_count', 0)}名客户经理 / "
+            f"{scope_summary.get('stock_count', 0)}只股票标的 / "
+            f"{scope_summary.get('group_count', 0)}个客户群",
             "cyan"
         ))
         if keyword:
@@ -156,6 +191,14 @@ def run_rumor_check(session_info):
 
     session_info["rumor_data"] = data
     session_info["rumor_done"] = True
+
+    add_to_ledger = input("是否将风险结果录入台账？(y/n，默认y)：").strip().lower()
+    if add_to_ledger != "n":
+        added = session_info["ledger"].add_rumor_risks(data)
+        _save_ledger(session_info)
+        print(color_text(f"已录入台账 {added} 条。", "green"))
+        print()
+
     return data
 
 
@@ -220,13 +263,31 @@ def _display_folder_chat_result(data):
         hc = sum(1 for v in fres.get("violations", []) if v["highest_risk"] == "high")
         mc = sum(1 for v in fres.get("violations", []) if v["highest_risk"] == "medium")
         if vc > 0:
-            flag = color_text(f"🔴 高{hc}/中{mc}", "red") if hc > 0 else color_text(f"🟡 中{mc}", "yellow")
+            flag = color_text(f"高{hc}/中{mc}", "red") if hc > 0 else color_text(f"中{mc}", "yellow")
         else:
-            flag = color_text("✅ 合规", "green")
+            flag = color_text("合规", "green")
         print(f"  {i}. {fname}  {total}条消息  违规{vc}条  {flag}")
 
     print()
     print("-" * 60)
+
+    duplicates = data.get("duplicate_high_risk", [])
+    if duplicates:
+        print()
+        print(color_text("跨文件重复传播的高风险内容（按重复次数排序）：", "red"))
+        print()
+        for i, dup in enumerate(duplicates, 1):
+            files_str = "、".join(dup["files"])
+            speakers_str = "、".join(dup["speakers"])
+            cats_str = "、".join(dup["categories"])
+            cnt_str = f'重复{dup["count"]}次'
+            print(f"  [{i}] {color_text(cnt_str, 'red')} | 涉及{len(dup['files'])}个文件")
+            print(f"      原句：{dup['content'][:60]}")
+            print(f"      所在文件：{files_str}")
+            print(f"      发言人：{speakers_str}")
+            print(f"      风险类型：{cats_str}")
+            print()
+        print("-" * 60)
 
     if data["high_risk_violations"]:
         print()
@@ -280,7 +341,6 @@ def run_chat_analysis(session_info):
         _display_single_chat_result(results)
         session_info["chat_data"] = results
         session_info["chat_done"] = True
-        return results
 
     elif choice == "2":
         file_path = input("请输入聊天记录文件路径（可拖拽）：").strip().strip('"').strip("'")
@@ -310,7 +370,6 @@ def run_chat_analysis(session_info):
         _display_single_chat_result(results)
         session_info["chat_data"] = results
         session_info["chat_done"] = True
-        return results
 
     elif choice == "3":
         folder_path = input("请输入聊天记录文件夹路径（可拖拽）：").strip().strip('"').strip("'")
@@ -345,17 +404,237 @@ def run_chat_analysis(session_info):
         _display_folder_chat_result(data)
         session_info["chat_data"] = data
         session_info["chat_done"] = True
-        return data
 
     else:
         print(color_text("无效选项。", "red"))
         return None
 
+    add_to_ledger = input("是否将违规内容录入台账？(y/n，默认y)：").strip().lower()
+    if add_to_ledger != "n":
+        added = session_info["ledger"].add_chat_risks(session_info.get("chat_data"))
+        _save_ledger(session_info)
+        print(color_text(f"已录入台账 {added} 条。", "green"))
+        print()
+
+    return session_info.get("chat_data")
+
+
+def run_ledger_management(session_info):
+    ledger = session_info.get("ledger")
+    if not ledger:
+        ledger = RiskLedger()
+        session_info["ledger"] = ledger
+
+    while True:
+        print()
+        print(color_text("--- 风险台账管理 ---", "bold"))
+        print()
+        summary = ledger.get_status_summary()
+        total = len(ledger.items)
+        print(f"  台账总数：{total} 条")
+        print(f"  {status_label(STATUS_PENDING)} {summary.get(STATUS_PENDING, 0)} 条    "
+              f"{status_label(STATUS_REMINDED)} {summary.get(STATUS_REMINDED, 0)} 条    "
+              f"{status_label(STATUS_RECTIFIED)} {summary.get(STATUS_RECTIFIED, 0)} 条")
+        print()
+        print("  1. 查看台账（可按营业部/经理/风险类型筛选）")
+        print("  2. 更新处置状态")
+        print("  3. 批量更新状态")
+        print("  0. 返回主菜单")
+        print()
+
+        choice = input("请选择：").strip()
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            _ledger_view(ledger)
+        elif choice == "2":
+            _ledger_update_status(ledger)
+            _save_ledger(session_info)
+        elif choice == "3":
+            _ledger_bulk_update(ledger)
+            _save_ledger(session_info)
+        else:
+            print(color_text("无效选项。", "red"))
+
+
+def _ledger_view(ledger):
+    print()
+    dept_filter = input("按营业部筛选（回车跳过）：").strip() or None
+    mgr_filter = input("按客户经理筛选（回车跳过）：").strip() or None
+    risk_filter = input("按风险类型筛选（回车跳过）：").strip() or None
+    status_filter = input("按处置状态筛选（待核实/已提醒/已整改，回车跳过）：").strip() or None
+
+    items = ledger.filter_items(
+        department=dept_filter,
+        manager=mgr_filter,
+        risk_type=risk_filter,
+        status=status_filter,
+    )
+
+    if not items:
+        print()
+        print(color_text("未找到匹配的台账记录。", "green"))
+        print()
+        return
+
+    print()
+    print(color_text(f"共 {len(items)} 条记录：", "yellow"))
+    print("-" * 70)
+    print(f"  {'序号':<4} {'来源':<4} {'营业部':<10} {'经理':<6} {'风险':<6} {'状态':<8} 内容摘要")
+    print("  " + "-" * 64)
+
+    for item in items:
+        dept = item.get("department", "-")
+        if dept == "-":
+            dept = "(群聊)"
+        mgr = item.get("manager", "-")
+        risk = "高" if item.get("risk_level") == "high" else "中"
+        status = item.get("status", STATUS_PENDING)
+        content_preview = item.get("content", "")[:30] + "..."
+        print(f"  {item['id']:<4} {item.get('source', '-'):<4} {dept:<10} {mgr:<6} "
+              f"{risk:<6} {status:<8} {content_preview}")
+
+    print("-" * 70)
+    print()
+    detail = input("输入序号查看详情（回车返回）：").strip()
+    if detail.isdigit():
+        item_id = int(detail)
+        for item in items:
+            if item["id"] == item_id:
+                print()
+                print(f"  序号：{item['id']}")
+                print(f"  来源：{item.get('source', '-')} / {item.get('source_detail', '-')}")
+                print(f"  营业部：{item.get('department', '-')}")
+                print(f"  客户经理/发言人：{item.get('manager', '-')}")
+                print(f"  风险等级：{item.get('risk_level', '-')}")
+                print(f"  风险类型：{'、'.join(item.get('risk_categories', []))}")
+                if item.get("stock"):
+                    print(f"  涉及标的：{item['stock']}")
+                print(f"  时间：{item.get('time', '-')}")
+                print(f"  原句：{item.get('content', '')}")
+                print(f"  处置状态：{status_label(item.get('status', STATUS_PENDING))}")
+                print(f"  录入时间：{item.get('added_at', '-')}")
+                if item.get("updated_at"):
+                    print(f"  更新时间：{item['updated_at']}")
+                print()
+                break
+
+
+def _ledger_update_status(ledger):
+    print()
+    item_id = input("请输入要更新的台账序号：").strip()
+    if not item_id.isdigit():
+        print(color_text("请输入有效数字。", "red"))
+        return
+
+    item_id = int(item_id)
+    current = None
+    for item in ledger.items:
+        if item["id"] == item_id:
+            current = item
+            break
+
+    if not current:
+        print(color_text(f"未找到序号 {item_id} 的记录。", "red"))
+        return
+
+    print(f"当前状态：{status_label(current.get('status', STATUS_PENDING))}")
+    print("可选状态：")
+    for i, s in enumerate(ALL_STATUSES, 1):
+        print(f"  {i}. {s}")
+    new_choice = input("请选择新状态：").strip()
+    if new_choice.isdigit():
+        idx = int(new_choice) - 1
+        if 0 <= idx < len(ALL_STATUSES):
+            if ledger.update_status(item_id, ALL_STATUSES[idx]):
+                print(color_text(f"已更新为：{ALL_STATUSES[idx]}", "green"))
+            else:
+                print(color_text("更新失败。", "red"))
+        else:
+            print(color_text("无效选项。", "red"))
+    else:
+        print(color_text("未做更改。", "yellow"))
+
+
+def _ledger_bulk_update(ledger):
+    print()
+    print("批量更新方式：")
+    print("  1. 按营业部更新所有记录")
+    print("  2. 按客户经理更新所有记录")
+    print("  3. 按风险类型更新所有记录")
+    print()
+
+    mode = input("请选择方式：").strip()
+
+    if mode == "1":
+        dept = input("请输入营业部名称：").strip()
+        if not dept:
+            return
+        items = ledger.filter_items(department=dept)
+    elif mode == "2":
+        mgr = input("请输入客户经理姓名：").strip()
+        if not mgr:
+            return
+        items = ledger.filter_items(manager=mgr)
+    elif mode == "3":
+        cats = ledger.get_risk_categories()
+        if not cats:
+            print("台账中无风险类型。")
+            return
+        print("可选风险类型：")
+        for i, c in enumerate(cats, 1):
+            print(f"  {i}. {c}")
+        cat_choice = input("请选择：").strip()
+        if cat_choice.isdigit():
+            idx = int(cat_choice) - 1
+            if 0 <= idx < len(cats):
+                items = ledger.filter_items(risk_type=cats[idx])
+            else:
+                return
+        else:
+            return
+    else:
+        return
+
+    if not items:
+        print(color_text("未找到匹配记录。", "yellow"))
+        return
+
+    item_ids = [i["id"] for i in items]
+    print(f"匹配到 {len(items)} 条记录，当前状态分布：")
+    status_dist = {}
+    for i in items:
+        s = i.get("status", STATUS_PENDING)
+        status_dist[s] = status_dist.get(s, 0) + 1
+    for s, c in status_dist.items():
+        print(f"  {s}：{c} 条")
+
+    print("更新为：")
+    for i, s in enumerate(ALL_STATUSES, 1):
+        print(f"  {i}. {s}")
+    new_choice = input("请选择新状态：").strip()
+    if new_choice.isdigit():
+        idx = int(new_choice) - 1
+        if 0 <= idx < len(ALL_STATUSES):
+            updated = ledger.bulk_update_status(item_ids, ALL_STATUSES[idx])
+            print(color_text(f"已更新 {updated} 条记录为：{ALL_STATUSES[idx]}", "green"))
+        else:
+            print(color_text("无效选项。", "red"))
+
 
 def run_report_generation(session_info):
     print()
-    print(color_text("--- 生成合规日报 ---", "bold"))
+    print(color_text("--- 生成合规日报 / 趋势汇总 ---", "bold"))
     print()
+    print("  1. 生成当日合规日报")
+    print("  2. 生成趋势汇总报告（适合周会复盘）")
+    print()
+    choice = input("请选择（默认1）：").strip() or "1"
+
+    if choice == "2":
+        _run_trend_report(session_info)
+        return
 
     dept_name = session_info.get("department")
     if not dept_name:
@@ -372,6 +651,7 @@ def run_report_generation(session_info):
     chat_data = session_info.get("chat_data")
     rumor_done = session_info.get("rumor_done", False)
     chat_done = session_info.get("chat_done", False)
+    ledger = session_info.get("ledger")
 
     if not rumor_done and not chat_done:
         print()
@@ -393,7 +673,7 @@ def run_report_generation(session_info):
     print("正在生成日报...")
     print()
 
-    full_report = generate_daily_report(dept_name, rumor_data, chat_data)
+    full_report = generate_daily_report(dept_name, rumor_data, chat_data, ledger=ledger)
     short_report = generate_short_report(dept_name, rumor_data, chat_data)
 
     print(color_text("【简短版（适合直接粘贴合规日志）】", "bold"))
@@ -451,13 +731,50 @@ def run_report_generation(session_info):
     return {"full": full_report, "short": short_report}
 
 
+def _run_trend_report(session_info):
+    dept_name = session_info.get("department")
+    if not dept_name:
+        dept_name = input("请输入营业部名称：").strip()
+    if not dept_name:
+        dept_name = "XX证券营业部"
+
+    days_input = input("请输入统计天数（默认7）：").strip()
+    days = int(days_input) if days_input.isdigit() else 7
+
+    print()
+    print("正在生成趋势汇总...")
+    print()
+
+    report = generate_trend_report(dept_name, days=days)
+
+    print(report)
+    print()
+
+    save = input("是否保存趋势报告？(y/n，默认n)：").strip().lower()
+    if save == "y":
+        date_str = datetime.now().strftime("%Y%m%d")
+        filename = f"合规趋势汇总_{days}天_{date_str}.txt"
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(report)
+            print(color_text(f"已保存到：{os.path.abspath(filename)}", "green"))
+        except Exception as e:
+            print(color_text(f"保存失败：{str(e)}", "red"))
+    print()
+
+
 def main():
+    ledger = RiskLedger()
+    if os.path.exists(LEDGER_FILE):
+        ledger.load_from_file(LEDGER_FILE)
+
     session_info = {
         "department": None,
         "rumor_data": None,
         "rumor_done": False,
         "chat_data": None,
         "chat_done": False,
+        "ledger": ledger,
     }
 
     print_header(session_info)
@@ -467,6 +784,7 @@ def main():
         choice = input("请输入选项编号：").strip()
 
         if choice == "0":
+            _save_ledger(session_info)
             print()
             print("感谢使用，再见！")
             print()
@@ -476,8 +794,10 @@ def main():
         elif choice == "2":
             run_chat_analysis(session_info)
         elif choice == "3":
-            run_report_generation(session_info)
+            run_ledger_management(session_info)
         elif choice == "4":
+            run_report_generation(session_info)
+        elif choice == "5":
             run_set_department(session_info)
         else:
             print()

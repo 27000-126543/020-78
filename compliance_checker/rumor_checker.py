@@ -56,7 +56,7 @@ def summarize_rumors_by_scope(rumor_data):
 
     results = rumor_data["results"]
     if not results:
-        return {"dept_count": 0, "manager_count": 0, "stock_count": 0, "groups": set()}
+        return {"dept_count": 0, "manager_count": 0, "stock_count": 0, "group_count": 0}
 
     departments = set()
     managers = set()

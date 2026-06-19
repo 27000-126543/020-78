@@ -207,6 +207,8 @@ def analyze_chat_folder(folder_path):
         "performed": True,
     }
 
+    duplicate_high_risk = _detect_duplicate_high_risk(all_high_risk)
+
     return {
         "performed": True,
         "mode": "folder",
@@ -216,5 +218,44 @@ def analyze_chat_folder(folder_path):
         "total_lines": total_lines,
         "total_violations": total_violations,
         "high_risk_violations": all_high_risk,
+        "duplicate_high_risk": duplicate_high_risk,
         "aggregate": aggregate,
     }
+
+
+def _detect_duplicate_high_risk(high_risk_violations):
+    if not high_risk_violations:
+        return []
+
+    content_groups = {}
+    for v in high_risk_violations:
+        content = v["content"].strip()
+        if content not in content_groups:
+            content_groups[content] = {
+                "content": content,
+                "files": [],
+                "speakers": set(),
+                "count": 0,
+                "categories": set(),
+            }
+        group = content_groups[content]
+        if v.get("file_name") and v["file_name"] not in group["files"]:
+            group["files"].append(v["file_name"])
+        group["speakers"].add(v["speaker"])
+        group["count"] += 1
+        for m in v.get("sensitive_matches", []):
+            group["categories"].add(m["category"])
+
+    duplicates = []
+    for group in content_groups.values():
+        if group["count"] > 1 or len(group["files"]) > 1:
+            duplicates.append({
+                "content": group["content"],
+                "count": group["count"],
+                "files": sorted(group["files"]),
+                "speakers": sorted(group["speakers"]),
+                "categories": sorted(group["categories"]),
+            })
+
+    duplicates.sort(key=lambda x: x["count"], reverse=True)
+    return duplicates

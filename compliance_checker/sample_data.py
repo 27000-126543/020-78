@@ -157,6 +157,62 @@ def generate_sample_rumors(keyword=None):
     return rumors
 
 
+def generate_historical_rumors(days=7):
+    today = datetime.now()
+    daily_stats = []
+
+    for d in range(days):
+        date = today - timedelta(days=d)
+        day_label = date.strftime("%Y-%m-%d")
+
+        if d == 0:
+            high = 8
+            medium = 3
+            managers = ["张伟", "赵敏", "孙磊", "李娜", "周芳", "陈静", "吴昊", "王强"]
+            top_keywords = ["保证收益", "内幕消息", "投诉", "全仓买入", "代客理财", "三七分成", "维权", "建仓"]
+        elif d == 1:
+            high = 6
+            medium = 2
+            managers = ["张伟", "赵敏", "李娜", "孙磊", "周芳", "刘洋"]
+            top_keywords = ["保证收益", "内幕消息", "小道消息", "全仓买入", "投诉", "稳赚不赔"]
+        elif d == 2:
+            high = 5
+            medium = 4
+            managers = ["张伟", "李娜", "赵敏", "孙磊", "吴昊"]
+            top_keywords = ["内幕消息", "翻倍", "投诉", "保证收益", "稳赚"]
+        elif d == 3:
+            high = 7
+            medium = 2
+            managers = ["张伟", "赵敏", "孙磊", "李娜", "周芳", "吴昊", "刘洋"]
+            top_keywords = ["全仓买入", "保证收益", "内幕消息", "投诉", "代客理财", "赔偿", "稳赚不赔"]
+        elif d == 4:
+            high = 4
+            medium = 3
+            managers = ["张伟", "李娜", "赵敏", "吴昊"]
+            top_keywords = ["建仓", "翻倍", "保证收益", "投诉"]
+        elif d == 5:
+            high = 6
+            medium = 2
+            managers = ["张伟", "赵敏", "孙磊", "李娜", "周芳", "陈静"]
+            top_keywords = ["保证收益", "内幕消息", "代客理财", "投诉", "全仓买入", "三七分成"]
+        else:
+            high = 5
+            medium = 3
+            managers = ["张伟", "李娜", "赵敏", "孙磊", "吴昊"]
+            top_keywords = ["内幕消息", "翻倍", "保证收益", "投诉", "稳赚不赔"]
+
+        daily_stats.append({
+            "date": day_label,
+            "high_risk_count": high,
+            "medium_risk_count": medium,
+            "total_count": high + medium,
+            "managers": managers,
+            "top_keywords": top_keywords,
+        })
+
+    return daily_stats
+
+
 def generate_sample_chat_lines():
     lines = [
         "2026-06-20 09:15:23 [张伟] 大家早上好，今天盘面震荡注意风险",

@@ -1,4 +1,5 @@
 from datetime import datetime
+from collections import Counter
 
 
 def _is_rumor_performed(rumor_data):
@@ -54,7 +55,7 @@ def _collect_issues(rumor_data, chat_data):
     return high_risk_count, medium_risk_count, all_categories, rumor_list, chat_agg
 
 
-def generate_daily_report(business_department, rumor_data, chat_data, check_date=None):
+def generate_daily_report(business_department, rumor_data, chat_data, check_date=None, ledger=None):
     if check_date is None:
         check_date = datetime.now().strftime("%Y年%m月%d日")
 
@@ -122,8 +123,9 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
             for r in rumor_list:
                 risk_label = "高风险" if r["highest_risk"] == "high" else "中风险"
                 dept = r.get("department", "-")
+                status_str = _lookup_ledger_status(ledger, r.get("content", ""), "舆情") if ledger else "待核实"
                 report_lines.append(
-                    f"  {issue_num}. [{risk_label}] {dept} / {r['source']} / {r['manager']} "
+                    f"  {issue_num}. [{risk_label}][{status_str}] {dept} / {r['source']} / {r['manager']} "
                     f"({r['time'].strftime('%m-%d %H:%M')})"
                 )
                 if r.get("stock"):
@@ -140,8 +142,9 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
                 loc = f"第{v['line_number']}行"
                 if v.get("file_name"):
                     loc = f"{v['file_name']} / {loc}"
+                status_str = _lookup_ledger_status(ledger, v.get("content", ""), "群聊") if ledger else "待核实"
                 report_lines.append(
-                    f"  {issue_num}. [{risk_label}] {loc} - {v['speaker']} ({v['timestamp']})"
+                    f"  {issue_num}. [{risk_label}][{status_str}] {loc} - {v['speaker']} ({v['timestamp']})"
                 )
                 report_lines.append(f"     违规内容：{v['content'][:50]}...")
                 report_lines.append(f"     涉及类型：{categories}")
@@ -165,6 +168,13 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
     if total_issues == 0:
         report_lines.append("今日无待处置事项，日常监控正常。")
     else:
+        if ledger:
+            status_summary = ledger.get_status_summary()
+            report_lines.append("处置状态汇总：")
+            for s in ["待核实", "已提醒", "已整改"]:
+                cnt = status_summary.get(s, 0)
+                report_lines.append(f"  - {s}：{cnt} 项")
+            report_lines.append("")
         report_lines.append("已采取的处置措施：")
         report_lines.append("  1. 对高风险问题已第一时间通知相关客户经理核实")
         report_lines.append("  2. 涉嫌违规表述已要求立即删除并补发风险揭示")
@@ -266,3 +276,98 @@ def generate_short_report(business_department, rumor_data, chat_data, check_date
     )
 
     return report
+
+
+def _lookup_ledger_status(ledger, content, source_type):
+    if not ledger or not content:
+        return "待核实"
+    for item in ledger.items:
+        if item.get("content", "").strip() == content.strip():
+            return item.get("status", "待核实")
+    return "待核实"
+
+
+def generate_trend_report(business_department, days=7, historical_data=None):
+    if historical_data is None:
+        from .sample_data import generate_historical_rumors
+        historical_data = generate_historical_rumors(days)
+
+    if not historical_data:
+        return "无历史数据可供趋势分析。"
+
+    lines = []
+    lines.append(f"【{business_department} 合规风险趋势汇总】")
+    lines.append(f"统计范围：近 {len(historical_data)} 天")
+    lines.append("=" * 60)
+
+    lines.append("")
+    lines.append("一、高风险数量变化")
+    lines.append("-" * 60)
+    lines.append(f"  {'日期':<14} {'高风险':>6} {'中风险':>6} {'合计':>6}")
+    lines.append("  " + "-" * 36)
+    for d in historical_data:
+        lines.append(
+            f"  {d['date']:<14} {d['high_risk_count']:>6} {d['medium_risk_count']:>6} {d['total_count']:>6}"
+        )
+
+    high_counts = [d["high_risk_count"] for d in historical_data]
+    total_counts = [d["total_count"] for d in historical_data]
+    avg_high = sum(high_counts) / len(high_counts) if high_counts else 0
+    avg_total = sum(total_counts) / len(total_counts) if total_counts else 0
+    trend = "上升" if len(high_counts) >= 2 and high_counts[0] > high_counts[-1] else \
+            "下降" if len(high_counts) >= 2 and high_counts[0] < high_counts[-1] else "持平"
+    lines.append("  " + "-" * 36)
+    lines.append(f"  日均高风险：{avg_high:.1f} 条  日均总量：{avg_total:.1f} 条  整体趋势：{trend}")
+
+    lines.append("")
+    lines.append("二、重复出现客户经理")
+    lines.append("-" * 60)
+    manager_counter = Counter()
+    for d in historical_data:
+        for mgr in d.get("managers", []):
+            manager_counter[mgr] += 1
+    repeat_managers = [(m, c) for m, c in manager_counter.most_common() if c > 1]
+    if repeat_managers:
+        for mgr, count in repeat_managers:
+            lines.append(f"  {mgr}：近{len(historical_data)}天出现 {count} 次")
+    else:
+        lines.append("  无重复出现客户经理")
+
+    lines.append("")
+    lines.append("三、高频敏感词")
+    lines.append("-" * 60)
+    keyword_counter = Counter()
+    for d in historical_data:
+        for kw in d.get("top_keywords", []):
+            keyword_counter[kw] += 1
+    top_keywords = keyword_counter.most_common(10)
+    if top_keywords:
+        for i, (kw, count) in enumerate(top_keywords, 1):
+            lines.append(f"  {i}. {kw}（出现 {count} 天）")
+    else:
+        lines.append("  无高频敏感词数据")
+
+    lines.append("")
+    lines.append("四、重点关注建议")
+    lines.append("-" * 60)
+    suggestions = []
+    if repeat_managers:
+        top_mgr = repeat_managers[0][0]
+        suggestions.append(f"重点关注 {top_mgr}，近期反复出现合规风险，建议安排合规谈话")
+    if top_keywords:
+        top_kw = top_keywords[0][0]
+        suggestions.append(f"高频敏感词「{top_kw}」需在合规培训中重点强调")
+    if trend == "上升":
+        suggestions.append("高风险数量呈上升趋势，建议加强日常巡检频次")
+    elif trend == "下降":
+        suggestions.append("高风险数量呈下降趋势，继续保持现有合规管理力度")
+    if not suggestions:
+        suggestions.append("整体合规态势平稳，持续日常监控即可")
+    for i, s in enumerate(suggestions, 1):
+        lines.append(f"  {i}. {s}")
+
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append(f"报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    return "\n".join(lines)
