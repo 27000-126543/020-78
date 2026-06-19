@@ -123,7 +123,7 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
             for r in rumor_list:
                 risk_label = "高风险" if r["highest_risk"] == "high" else "中风险"
                 dept = r.get("department", "-")
-                status_str = _lookup_ledger_status(ledger, r.get("content", ""), "舆情") if ledger else "待核实"
+                status_str = _lookup_ledger_status(ledger, r.get("content", ""), "舆情", r.get("manager")) if ledger else "待核实"
                 report_lines.append(
                     f"  {issue_num}. [{risk_label}][{status_str}] {dept} / {r['source']} / {r['manager']} "
                     f"({r['time'].strftime('%m-%d %H:%M')})"
@@ -142,7 +142,7 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
                 loc = f"第{v['line_number']}行"
                 if v.get("file_name"):
                     loc = f"{v['file_name']} / {loc}"
-                status_str = _lookup_ledger_status(ledger, v.get("content", ""), "群聊") if ledger else "待核实"
+                status_str = _lookup_ledger_status(ledger, v.get("content", ""), "群聊", v.get("speaker")) if ledger else "待核实"
                 report_lines.append(
                     f"  {issue_num}. [{risk_label}][{status_str}] {loc} - {v['speaker']} ({v['timestamp']})"
                 )
@@ -216,7 +216,7 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
     return "\n".join(report_lines)
 
 
-def generate_short_report(business_department, rumor_data, chat_data, check_date=None):
+def generate_short_report(business_department, rumor_data, chat_data, check_date=None, ledger=None):
     if check_date is None:
         check_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -250,7 +250,17 @@ def generate_short_report(business_department, rumor_data, chat_data, check_date
     else:
         dept_desc = ""
 
-    disposition = "已通知相关客户经理整改，违规内容要求删除并补发风险揭示；客诉事项已启动处理流程；台账登记完毕" if total_issues > 0 else "日常监控正常"
+    if ledger and total_issues > 0:
+        status_summary = ledger.get_status_summary()
+        disposition = (
+            f"待核实{status_summary.get('待核实', 0)}项、"
+            f"已提醒{status_summary.get('已提醒', 0)}项、"
+            f"已整改{status_summary.get('已整改', 0)}项"
+        )
+    elif total_issues > 0:
+        disposition = "已通知相关客户经理整改，违规内容要求删除并补发风险揭示；台账登记完毕"
+    else:
+        disposition = "日常监控正常"
 
     if not rumor_performed or not chat_performed:
         disposition += "（部分检查未完成，待补做）"
@@ -278,16 +288,23 @@ def generate_short_report(business_department, rumor_data, chat_data, check_date
     return report
 
 
-def _lookup_ledger_status(ledger, content, source_type):
+def _lookup_ledger_status(ledger, content, source_type, manager=None):
     if not ledger or not content:
         return "待核实"
+    content_stripped = content.strip()
     for item in ledger.items:
-        if item.get("content", "").strip() == content.strip():
+        if item.get("content", "").strip() == content_stripped:
+            if item.get("source") == source_type:
+                if manager and item.get("manager", "-") != manager:
+                    continue
+                return item.get("status", "待核实")
+    for item in ledger.items:
+        if item.get("content", "").strip() == content_stripped:
             return item.get("status", "待核实")
     return "待核实"
 
 
-def generate_trend_report(business_department, days=7, historical_data=None):
+def generate_trend_report(business_department, days=7, historical_data=None, ledger=None):
     if historical_data is None:
         from .sample_data import generate_historical_rumors
         historical_data = generate_historical_rumors(days)
@@ -296,7 +313,7 @@ def generate_trend_report(business_department, days=7, historical_data=None):
         return "无历史数据可供趋势分析。"
 
     lines = []
-    lines.append(f"【{business_department} 合规风险趋势汇总】")
+    lines.append(f"【{business_department} 合规风险周会复盘】")
     lines.append(f"统计范围：近 {len(historical_data)} 天")
     lines.append("=" * 60)
 
@@ -348,7 +365,36 @@ def generate_trend_report(business_department, days=7, historical_data=None):
         lines.append("  无高频敏感词数据")
 
     lines.append("")
-    lines.append("四、重点关注建议")
+    lines.append("四、待整改台账")
+    lines.append("-" * 60)
+    if ledger:
+        pending_summary = ledger.get_pending_summary()
+        lines.append(f"  待核实：{pending_summary['pending_count']} 项")
+        lines.append(f"  已提醒未整改：{pending_summary['reminded_count']} 项")
+        if pending_summary["by_department"]:
+            lines.append("")
+            lines.append("  按营业部分布：")
+            for dept, cnt in sorted(pending_summary["by_department"].items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"    - {dept}：{cnt} 项")
+        if pending_summary["by_manager"]:
+            lines.append("")
+            lines.append("  按经理分布：")
+            for mgr, cnt in sorted(pending_summary["by_manager"].items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"    - {mgr}：{cnt} 项")
+        overdue = ledger.get_overdue_items(overdue_days=3)
+        if overdue:
+            lines.append("")
+            lines.append(f"  超期未核实（录入超过3天仍待核实）：{len(overdue)} 项")
+            for item in overdue[:10]:
+                dept = item.get("department", "-")
+                mgr = item.get("manager", "-")
+                preview = item.get("content", "")[:30] + "..."
+                lines.append(f"    [{item['id']}] {dept} / {mgr} / {preview}")
+    else:
+        lines.append("  暂无台账数据")
+
+    lines.append("")
+    lines.append("五、重点关注建议")
     lines.append("-" * 60)
     suggestions = []
     if repeat_managers:
@@ -361,6 +407,10 @@ def generate_trend_report(business_department, days=7, historical_data=None):
         suggestions.append("高风险数量呈上升趋势，建议加强日常巡检频次")
     elif trend == "下降":
         suggestions.append("高风险数量呈下降趋势，继续保持现有合规管理力度")
+    if ledger:
+        pending_count = ledger.get_pending_summary()["pending_count"]
+        if pending_count > 0:
+            suggestions.append(f"当前有 {pending_count} 项待核实风险，建议尽快完成核实处置")
     if not suggestions:
         suggestions.append("整体合规态势平稳，持续日常监控即可")
     for i, s in enumerate(suggestions, 1):
@@ -369,5 +419,6 @@ def generate_trend_report(business_department, days=7, historical_data=None):
     lines.append("")
     lines.append("=" * 60)
     lines.append(f"报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"报告类型：周会复盘材料")
 
     return "\n".join(lines)

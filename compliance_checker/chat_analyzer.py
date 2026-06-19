@@ -230,6 +230,7 @@ def _detect_duplicate_high_risk(high_risk_violations):
     content_groups = {}
     for v in high_risk_violations:
         content = v["content"].strip()
+        file_name = v.get("file_name", "")
         if content not in content_groups:
             content_groups[content] = {
                 "content": content,
@@ -239,8 +240,8 @@ def _detect_duplicate_high_risk(high_risk_violations):
                 "categories": set(),
             }
         group = content_groups[content]
-        if v.get("file_name") and v["file_name"] not in group["files"]:
-            group["files"].append(v["file_name"])
+        if file_name and file_name not in group["files"]:
+            group["files"].append(file_name)
         group["speakers"].add(v["speaker"])
         group["count"] += 1
         for m in v.get("sensitive_matches", []):
@@ -248,14 +249,15 @@ def _detect_duplicate_high_risk(high_risk_violations):
 
     duplicates = []
     for group in content_groups.values():
-        if group["count"] > 1 or len(group["files"]) > 1:
+        if len(group["files"]) > 1:
             duplicates.append({
                 "content": group["content"],
                 "count": group["count"],
+                "file_count": len(group["files"]),
                 "files": sorted(group["files"]),
                 "speakers": sorted(group["speakers"]),
                 "categories": sorted(group["categories"]),
             })
 
-    duplicates.sort(key=lambda x: x["count"], reverse=True)
+    duplicates.sort(key=lambda x: (x["file_count"], x["count"]), reverse=True)
     return duplicates

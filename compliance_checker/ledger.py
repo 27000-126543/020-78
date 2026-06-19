@@ -40,7 +40,7 @@ class RiskLedger:
             added += 1
         return added
 
-    def add_chat_risks(self, chat_data):
+    def add_chat_risks(self, chat_data, department=None):
         if not chat_data or not chat_data.get("performed"):
             return 0
 
@@ -57,7 +57,7 @@ class RiskLedger:
             item = {
                 "id": self._next_id,
                 "source": "群聊",
-                "department": "-",
+                "department": department if department else "-",
                 "manager": v.get("speaker", "-"),
                 "source_detail": v.get("file_name", "-"),
                 "content": v.get("content", ""),
@@ -149,3 +149,52 @@ class RiskLedger:
             return True
         except Exception:
             return False
+
+    def get_closure_view(self, days=7):
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(days=days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        recent = [i for i in self.items if i.get("added_at", "") >= cutoff_str]
+        counts = {"新增": 0, STATUS_PENDING: 0, STATUS_REMINDED: 0, STATUS_RECTIFIED: 0}
+        counts["新增"] = len(recent)
+        for item in recent:
+            s = item.get("status", STATUS_PENDING)
+            if s in counts:
+                counts[s] += 1
+        return {
+            "days": days,
+            "total_added": counts["新增"],
+            "pending": counts[STATUS_PENDING],
+            "reminded": counts[STATUS_REMINDED],
+            "rectified": counts[STATUS_RECTIFIED],
+            "items": recent,
+        }
+
+    def get_overdue_items(self, overdue_days=3):
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(days=overdue_days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        overdue = []
+        for item in self.items:
+            if item.get("status", STATUS_PENDING) == STATUS_PENDING:
+                added = item.get("added_at", "")
+                if added and added < cutoff_str:
+                    overdue.append(item)
+        return overdue
+
+    def get_pending_summary(self):
+        pending = [i for i in self.items if i.get("status") == STATUS_PENDING]
+        reminded = [i for i in self.items if i.get("status") == STATUS_REMINDED]
+        dept_dist = {}
+        mgr_dist = {}
+        for item in pending + reminded:
+            d = item.get("department", "-")
+            dept_dist[d] = dept_dist.get(d, 0) + 1
+            m = item.get("manager", "-")
+            mgr_dist[m] = mgr_dist.get(m, 0) + 1
+        return {
+            "pending_count": len(pending),
+            "reminded_count": len(reminded),
+            "by_department": dept_dist,
+            "by_manager": mgr_dist,
+        }

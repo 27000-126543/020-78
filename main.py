@@ -16,7 +16,7 @@ LEDGER_FILE = "risk_ledger.json"
 def print_header(session_info):
     print()
     print("=" * 60)
-    print("        证券营业部合规巡检工具 v1.2")
+    print("        证券营业部合规巡检工具 v1.3")
     print("=" * 60)
     dept = session_info.get("department")
     rumor_done = "✓" if session_info.get("rumor_done") else "✗"
@@ -274,14 +274,15 @@ def _display_folder_chat_result(data):
     duplicates = data.get("duplicate_high_risk", [])
     if duplicates:
         print()
-        print(color_text("跨文件重复传播的高风险内容（按重复次数排序）：", "red"))
+        print(color_text("跨文件重复传播的高风险内容（按传播范围排序）：", "red"))
         print()
         for i, dup in enumerate(duplicates, 1):
             files_str = "、".join(dup["files"])
             speakers_str = "、".join(dup["speakers"])
             cats_str = "、".join(dup["categories"])
+            fc_str = f'{dup["file_count"]}个文件'
             cnt_str = f'重复{dup["count"]}次'
-            print(f"  [{i}] {color_text(cnt_str, 'red')} | 涉及{len(dup['files'])}个文件")
+            print(f"  [{i}] {color_text(cnt_str, 'red')} | 涉及{color_text(fc_str, 'yellow')}")
             print(f"      原句：{dup['content'][:60]}")
             print(f"      所在文件：{files_str}")
             print(f"      发言人：{speakers_str}")
@@ -411,9 +412,13 @@ def run_chat_analysis(session_info):
 
     add_to_ledger = input("是否将违规内容录入台账？(y/n，默认y)：").strip().lower()
     if add_to_ledger != "n":
-        added = session_info["ledger"].add_chat_risks(session_info.get("chat_data"))
+        dept = session_info.get("department")
+        if not dept:
+            dept_input = input("当前未设置营业部，请输入关联营业部（回车跳过标记为未指定）：").strip()
+            dept = dept_input if dept_input else None
+        added = session_info["ledger"].add_chat_risks(session_info.get("chat_data"), department=dept)
         _save_ledger(session_info)
-        print(color_text(f"已录入台账 {added} 条。", "green"))
+        print(color_text(f"已录入台账 {added} 条" + (f"（关联营业部：{dept}）" if dept else ""), "green"))
         print()
 
     return session_info.get("chat_data")
@@ -437,8 +442,9 @@ def run_ledger_management(session_info):
               f"{status_label(STATUS_RECTIFIED)} {summary.get(STATUS_RECTIFIED, 0)} 条")
         print()
         print("  1. 查看台账（可按营业部/经理/风险类型筛选）")
-        print("  2. 更新处置状态")
-        print("  3. 批量更新状态")
+        print("  2. 闭环视图（近几天新增/已提醒/已整改/仍待核实）")
+        print("  3. 更新处置状态")
+        print("  4. 批量更新状态")
         print("  0. 返回主菜单")
         print()
 
@@ -449,13 +455,54 @@ def run_ledger_management(session_info):
         elif choice == "1":
             _ledger_view(ledger)
         elif choice == "2":
+            _ledger_closure_view(ledger)
+        elif choice == "3":
             _ledger_update_status(ledger)
             _save_ledger(session_info)
-        elif choice == "3":
+        elif choice == "4":
             _ledger_bulk_update(ledger)
             _save_ledger(session_info)
         else:
             print(color_text("无效选项。", "red"))
+
+
+def _ledger_closure_view(ledger):
+    print()
+    days_input = input("查看近几天的闭环数据（默认7）：").strip()
+    days = int(days_input) if days_input.isdigit() else 7
+
+    closure = ledger.get_closure_view(days=days)
+    print()
+    print(color_text(f"--- 近 {days} 天台账闭环视图 ---", "bold"))
+    print()
+    print(f"  新增录入：{closure['total_added']} 条")
+    print(f"  {status_label(STATUS_PENDING)} 待核实：{closure['pending']} 条")
+    print(f"  {status_label(STATUS_REMINDED)} 已提醒：{closure['reminded']} 条")
+    print(f"  {status_label(STATUS_RECTIFIED)} 已整改：{closure['rectified']} 条")
+
+    if closure['total_added'] > 0:
+        rect_rate = closure['rectified'] / closure['total_added'] * 100
+        print(f"  整改率：{rect_rate:.1f}%")
+    print()
+
+    overdue_input = input("查看超过几天仍未核实的记录（默认3，回车跳过）：").strip()
+    overdue_days = int(overdue_input) if overdue_input.isdigit() else 0
+    if overdue_days > 0:
+        overdue = ledger.get_overdue_items(overdue_days=overdue_days)
+        if overdue:
+            print()
+            print(color_text(f"录入超过 {overdue_days} 天仍待核实的记录（{len(overdue)} 条）：", "red"))
+            print("-" * 70)
+            for item in overdue:
+                dept = item.get("department", "-")
+                mgr = item.get("manager", "-")
+                preview = item.get("content", "")[:40] + "..."
+                print(f"  [{item['id']}] {dept} / {mgr} / {preview}")
+                print(f"       录入时间：{item.get('added_at', '-')}")
+            print("-" * 70)
+        else:
+            print(color_text(f"没有超过 {overdue_days} 天仍待核实的记录。", "green"))
+    print()
 
 
 def _ledger_view(ledger):
@@ -674,7 +721,7 @@ def run_report_generation(session_info):
     print()
 
     full_report = generate_daily_report(dept_name, rumor_data, chat_data, ledger=ledger)
-    short_report = generate_short_report(dept_name, rumor_data, chat_data)
+    short_report = generate_short_report(dept_name, rumor_data, chat_data, ledger=ledger)
 
     print(color_text("【简短版（适合直接粘贴合规日志）】", "bold"))
     print("-" * 60)
@@ -741,19 +788,35 @@ def _run_trend_report(session_info):
     days_input = input("请输入统计天数（默认7）：").strip()
     days = int(days_input) if days_input.isdigit() else 7
 
+    ledger = session_info.get("ledger")
+
     print()
-    print("正在生成趋势汇总...")
+    print("正在生成周会复盘材料...")
     print()
 
-    report = generate_trend_report(dept_name, days=days)
+    report = generate_trend_report(dept_name, days=days, ledger=ledger)
 
     print(report)
     print()
 
-    save = input("是否保存趋势报告？(y/n，默认n)：").strip().lower()
+    preview_lines = report.split("\n")
+    summary_preview = []
+    for line in preview_lines:
+        stripped = line.strip()
+        if stripped.startswith("日均") or stripped.startswith("整体趋势"):
+            summary_preview.append(stripped)
+        elif stripped.startswith("重点关注") or stripped.startswith("1.") or stripped.startswith("2.") or stripped.startswith("3."):
+            summary_preview.append(stripped)
+    if summary_preview:
+        print(color_text("摘要预览：", "bold"))
+        for line in summary_preview[:5]:
+            print(f"  {line}")
+        print()
+
+    save = input("是否保存周会复盘材料？(y/n，默认n)：").strip().lower()
     if save == "y":
         date_str = datetime.now().strftime("%Y%m%d")
-        filename = f"合规趋势汇总_{days}天_{date_str}.txt"
+        filename = f"合规周会复盘_{days}天_{date_str}.txt"
         try:
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(report)
