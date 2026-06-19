@@ -1,5 +1,5 @@
 from .sensitive_words import SENSITIVE_PATTERNS
-from .sample_data import generate_sample_rumors
+from .sample_data import generate_sample_rumors, DEPARTMENTS
 
 
 def detect_sensitive_content(text):
@@ -40,10 +40,50 @@ def check_rumors(keyword=None, use_sample=True):
             results.append(rumor_copy)
 
     results.sort(
-        key=lambda x: (
-            {"high": 0, "medium": 1, "low": 2}[x["highest_risk"]],
-            -x["time"].timestamp()
-        )
+        key=lambda x: (-x["time"].timestamp(),)
     )
 
-    return results
+    return {
+        "performed": True,
+        "keyword": keyword,
+        "results": results,
+    }
+
+
+def summarize_rumors_by_scope(rumor_data):
+    if not rumor_data or not rumor_data.get("performed"):
+        return None
+
+    results = rumor_data["results"]
+    if not results:
+        return {"dept_count": 0, "manager_count": 0, "stock_count": 0, "groups": set()}
+
+    departments = set()
+    managers = set()
+    stocks = set()
+    groups = set()
+
+    for r in results:
+        if r.get("department"):
+            departments.add(r["department"])
+        if r.get("manager"):
+            managers.add(r["manager"])
+        if r.get("stock"):
+            stocks.add(r["stock"])
+        if r.get("source"):
+            groups.add(r["source"])
+
+    return {
+        "dept_count": len(departments),
+        "departments": sorted(departments),
+        "manager_count": len(managers),
+        "managers": sorted(managers),
+        "stock_count": len(stocks),
+        "stocks": sorted(stocks),
+        "group_count": len(groups),
+        "groups": sorted(groups),
+    }
+
+
+def list_departments():
+    return list(DEPARTMENTS.keys())

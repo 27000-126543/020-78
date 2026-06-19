@@ -1,5 +1,18 @@
 from datetime import datetime, timedelta
 
+DEPARTMENTS = {
+    "朝阳门营业部": ["张伟", "李娜", "王强"],
+    "建国门营业部": ["赵敏", "刘洋", "陈静"],
+    "中关村营业部": ["孙磊", "周芳", "吴昊"],
+}
+
+STOCK_BY_DEPT = {
+    "朝阳门营业部": ["XX科技", "YY股份", "ZZ证券", "WW发展"],
+    "建国门营业部": ["VV集团", "UU银行", "TT地产"],
+    "中关村营业部": ["SS芯片", "RR医药", "QQ新能源"],
+}
+
+
 def generate_sample_rumors(keyword=None):
     today = datetime.now()
     rumors = []
@@ -8,6 +21,7 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "客户群A",
             "manager": "张伟",
+            "department": "朝阳门营业部",
             "content": "今天有内部消息说XX科技要重组，大家可以关注一下，肯定涨",
             "time": today - timedelta(hours=2),
             "stock": "XX科技",
@@ -15,6 +29,7 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "客户群B",
             "manager": "李娜",
+            "department": "朝阳门营业部",
             "content": "这支股票我保证收益至少20%，稳赚不赔，放心买",
             "time": today - timedelta(hours=5),
             "stock": "YY股份",
@@ -22,6 +37,7 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "客户群C",
             "manager": "王强",
+            "department": "朝阳门营业部",
             "content": "最近行情不好，有客户亏了不少，说要投诉到证监会",
             "time": today - timedelta(hours=8),
             "stock": "ZZ证券",
@@ -29,6 +45,7 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "朋友圈",
             "manager": "张伟",
+            "department": "朝阳门营业部",
             "content": "主力资金正在建仓，马上要拉升了，赶紧全仓买入",
             "time": today - timedelta(hours=12),
             "stock": "XX科技",
@@ -36,6 +53,7 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "客户群A",
             "manager": "张伟",
+            "department": "朝阳门营业部",
             "content": "我帮你操作吧，账号密码告诉我，保证比你自己炒赚得多",
             "time": today - timedelta(days=1, hours=3),
             "stock": "WW发展",
@@ -43,47 +61,94 @@ def generate_sample_rumors(keyword=None):
         {
             "source": "客户群D",
             "manager": "赵敏",
+            "department": "建国门营业部",
             "content": "成为我们的VIP会员，每月只收3000服务费，保证月月盈利",
             "time": today - timedelta(days=1, hours=6),
             "stock": "",
         },
         {
+            "source": "VIP客户群",
+            "manager": "赵敏",
+            "department": "建国门营业部",
+            "content": "VV集团小道消息，有重磅利好即将公布，现在买入稳赚",
+            "time": today - timedelta(days=1, hours=8),
+            "stock": "VV集团",
+        },
+        {
             "source": "客户群B",
             "manager": "李娜",
+            "department": "朝阳门营业部",
             "content": "这只股票目标价50元，现在才20，翻倍不是问题",
             "time": today - timedelta(days=1, hours=10),
             "stock": "YY股份",
         },
         {
-            "source": "客户群C",
-            "manager": "王强",
-            "content": "最近市场波动大，建议大家控制仓位，注意风险",
-            "time": today - timedelta(days=2),
-            "stock": "",
-        },
-        {
             "source": "客户群E",
             "manager": "刘洋",
+            "department": "建国门营业部",
             "content": "小道消息：某上市公司董事长被调查，还没公开",
             "time": today - timedelta(days=2, hours=5),
-            "stock": "VV集团",
+            "stock": "UU银行",
         },
         {
             "source": "客户群A",
             "manager": "张伟",
+            "department": "朝阳门营业部",
             "content": "我们三七分成，我出消息你出钱，稳赚不亏",
             "time": today - timedelta(days=2, hours=8),
             "stock": "XX科技",
+        },
+        {
+            "source": "高净值群",
+            "manager": "陈静",
+            "department": "建国门营业部",
+            "content": "TT地产客户亏了40%，要维权起诉，大家注意沟通方式",
+            "time": today - timedelta(days=2, hours=10),
+            "stock": "TT地产",
+        },
+        {
+            "source": "客户群F",
+            "manager": "孙磊",
+            "department": "中关村营业部",
+            "content": "SS芯片有内幕，近期将公告重大订单，抓紧建仓",
+            "time": today - timedelta(hours=3),
+            "stock": "SS芯片",
+        },
+        {
+            "source": "客户群G",
+            "manager": "周芳",
+            "department": "中关村营业部",
+            "content": "RR医药我保证保本，亏了算我的，大胆买",
+            "time": today - timedelta(hours=6),
+            "stock": "RR医药",
+        },
+        {
+            "source": "客户群H",
+            "manager": "吴昊",
+            "department": "中关村营业部",
+            "content": "客户反映上周听了建议买入QQ新能源亏了很多，要求赔偿",
+            "time": today - timedelta(hours=9),
+            "stock": "QQ新能源",
+        },
+        {
+            "source": "客户群C",
+            "manager": "王强",
+            "department": "朝阳门营业部",
+            "content": "最近市场波动大，建议大家控制仓位，注意风险",
+            "time": today - timedelta(days=2),
+            "stock": "",
         },
     ]
 
     for r in base_rumors:
         if keyword:
             kw = keyword.lower()
-            if (kw in r["manager"].lower() or
-                kw in r["source"].lower() or
-                kw in r["content"].lower() or
-                kw in r["stock"].lower()):
+            dept_match = kw in r["department"].lower()
+            mgr_match = kw in r["manager"].lower()
+            src_match = kw in r["source"].lower()
+            content_match = kw in r["content"].lower()
+            stock_match = kw in r["stock"].lower()
+            if dept_match or mgr_match or src_match or content_match or stock_match:
                 rumors.append(r)
         else:
             rumors.append(r)

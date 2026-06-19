@@ -90,7 +90,11 @@ def analyze_chat_lines(lines):
 def analyze_chat_file(file_path=None, use_sample=False):
     if use_sample or not file_path:
         lines = generate_sample_chat_lines()
-        return analyze_chat_lines(lines)
+        result = analyze_chat_lines(lines)
+        result["file_name"] = "示例数据"
+        result["file_path"] = None
+        result["performed"] = True
+        return result
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -112,4 +116,105 @@ def analyze_chat_file(file_path=None, use_sample=False):
     if lines is None:
         raise ValueError("无法识别文件编码，请转换为 UTF-8 格式后重试")
 
-    return analyze_chat_lines(lines)
+    result = analyze_chat_lines(lines)
+    result["file_name"] = os.path.basename(file_path)
+    result["file_path"] = file_path
+    result["performed"] = True
+    return result
+
+
+def analyze_chat_folder(folder_path):
+    if not os.path.exists(folder_path):
+        raise FileNotFoundError(f"文件夹不存在: {folder_path}")
+
+    if not os.path.isdir(folder_path):
+        raise ValueError(f"路径不是文件夹: {folder_path}")
+
+    valid_exts = ['.txt', '.log', '.csv']
+    file_list = []
+    for fname in os.listdir(folder_path):
+        fpath = os.path.join(folder_path, fname)
+        if os.path.isfile(fpath):
+            _, ext = os.path.splitext(fname)
+            if ext.lower() in valid_exts:
+                file_list.append(fpath)
+
+    if not file_list:
+        return {
+            "performed": True,
+            "mode": "folder",
+            "folder_path": folder_path,
+            "file_count": 0,
+            "file_results": [],
+            "total_lines": 0,
+            "total_violations": 0,
+            "high_risk_violations": [],
+            "aggregate": None,
+        }
+
+    file_results = []
+    total_lines = 0
+    total_violations = 0
+    all_high_risk = []
+    combined_violations = []
+    combined_speaker_stats = {}
+
+    for fpath in sorted(file_list):
+        try:
+            fres = analyze_chat_file(file_path=fpath)
+            file_results.append(fres)
+            total_lines += fres["total_lines"]
+            total_violations += fres["violation_count"]
+
+            for v in fres["violations"]:
+                v_copy = v.copy()
+                v_copy["file_name"] = fres["file_name"]
+                v_copy["file_path"] = fres["file_path"]
+                combined_violations.append(v_copy)
+                if v["highest_risk"] == "high":
+                    all_high_risk.append(v_copy)
+
+            for speaker, stats in fres["speaker_stats"].items():
+                if speaker not in combined_speaker_stats:
+                    combined_speaker_stats[speaker] = {"total": 0, "violations": 0}
+                combined_speaker_stats[speaker]["total"] += stats["total"]
+                combined_speaker_stats[speaker]["violations"] += stats["violations"]
+        except Exception as e:
+            file_results.append({
+                "file_name": os.path.basename(fpath),
+                "file_path": fpath,
+                "performed": False,
+                "error": str(e),
+            })
+
+    combined_violations.sort(
+        key=lambda x: (
+            {"high": 0, "medium": 1, "low": 2}[x["highest_risk"]],
+            x["line_number"]
+        )
+    )
+    all_high_risk.sort(
+        key=lambda x: x["line_number"]
+    )
+
+    aggregate = {
+        "total_lines": total_lines,
+        "violation_count": total_violations,
+        "violations": combined_violations,
+        "speaker_stats": combined_speaker_stats,
+        "file_name": f"{len(file_results)}个文件汇总",
+        "file_path": folder_path,
+        "performed": True,
+    }
+
+    return {
+        "performed": True,
+        "mode": "folder",
+        "folder_path": folder_path,
+        "file_count": len(file_results),
+        "file_results": file_results,
+        "total_lines": total_lines,
+        "total_violations": total_violations,
+        "high_risk_violations": all_high_risk,
+        "aggregate": aggregate,
+    }
