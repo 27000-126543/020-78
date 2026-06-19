@@ -16,7 +16,7 @@ LEDGER_FILE = "risk_ledger.json"
 def print_header(session_info):
     print()
     print("=" * 60)
-    print("        证券营业部合规巡检工具 v1.3")
+    print("        证券营业部合规巡检工具 v1.4")
     print("=" * 60)
     dept = session_info.get("department")
     rumor_done = "✓" if session_info.get("rumor_done") else "✗"
@@ -421,6 +421,21 @@ def run_chat_analysis(session_info):
         print(color_text(f"已录入台账 {added} 条" + (f"（关联营业部：{dept}）" if dept else ""), "green"))
         print()
 
+        chat_data_now = session_info.get("chat_data")
+        if chat_data_now and chat_data_now.get("mode") == "folder":
+            duplicates = chat_data_now.get("duplicate_high_risk", [])
+            if duplicates:
+                print(color_text(f"发现 {len(duplicates)} 个跨文件重复传播的高风险内容。", "yellow"))
+                create_group = input("是否一键创建传播事件组？(y/n，默认y)：").strip().lower()
+                if create_group != "n":
+                    for dup in duplicates:
+                        gid = session_info["ledger"].add_propagation_group(dup, department=dept)
+                        print(f"  已创建传播事件组 #{gid}：{dup['content'][:30]}...")
+                    _save_ledger(session_info)
+                    print(color_text(f"已创建 {len(duplicates)} 个传播事件组。", "green"))
+                print()
+    print()
+
     return session_info.get("chat_data")
 
 
@@ -445,6 +460,8 @@ def run_ledger_management(session_info):
         print("  2. 闭环视图（近几天新增/已提醒/已整改/仍待核实）")
         print("  3. 更新处置状态")
         print("  4. 批量更新状态")
+        print("  5. 追加整改记录（提醒/整改说明/复核结论）")
+        print("  6. 查看传播事件组（跨文件重复内容汇总）")
         print("  0. 返回主菜单")
         print()
 
@@ -462,6 +479,11 @@ def run_ledger_management(session_info):
         elif choice == "4":
             _ledger_bulk_update(ledger)
             _save_ledger(session_info)
+        elif choice == "5":
+            _ledger_append_action(ledger)
+            _save_ledger(session_info)
+        elif choice == "6":
+            _ledger_view_propagation_groups(ledger)
         else:
             print(color_text("无效选项。", "red"))
 
@@ -485,23 +507,24 @@ def _ledger_closure_view(ledger):
         print(f"  整改率：{rect_rate:.1f}%")
     print()
 
-    overdue_input = input("查看超过几天仍未核实的记录（默认3，回车跳过）：").strip()
+    overdue_input = input("查看超过几天仍待处理的记录（待核实+已提醒未整改，默认3，回车跳过）：").strip()
     overdue_days = int(overdue_input) if overdue_input.isdigit() else 0
     if overdue_days > 0:
         overdue = ledger.get_overdue_items(overdue_days=overdue_days)
         if overdue:
             print()
-            print(color_text(f"录入超过 {overdue_days} 天仍待核实的记录（{len(overdue)} 条）：", "red"))
+            print(color_text(f"录入超过 {overdue_days} 天仍待处理的记录（{len(overdue)} 条）：", "red"))
             print("-" * 70)
             for item in overdue:
                 dept = item.get("department", "-")
                 mgr = item.get("manager", "-")
+                st = item.get("status", STATUS_PENDING)
                 preview = item.get("content", "")[:40] + "..."
-                print(f"  [{item['id']}] {dept} / {mgr} / {preview}")
+                print(f"  [{item['id']}] {status_label(st)} {dept} / {mgr} / {preview}")
                 print(f"       录入时间：{item.get('added_at', '-')}")
             print("-" * 70)
         else:
-            print(color_text(f"没有超过 {overdue_days} 天仍待核实的记录。", "green"))
+            print(color_text(f"没有超过 {overdue_days} 天仍待处理的记录。", "green"))
     print()
 
 
@@ -564,6 +587,20 @@ def _ledger_view(ledger):
                 print(f"  录入时间：{item.get('added_at', '-')}")
                 if item.get("updated_at"):
                     print(f"  更新时间：{item['updated_at']}")
+                if item.get("group_id"):
+                    print(f"  所属传播事件组：#{item['group_id']}")
+                history = item.get("history", [])
+                if history:
+                    print(f"  处置历史（{len(history)}条）：")
+                    for idx, act in enumerate(history, 1):
+                        parts = [act.get("time", "")]
+                        if act.get("action_type"):
+                            parts.append(f"[{act['action_type']}]")
+                        if act.get("note"):
+                            parts.append(f"备注：{act['note']}")
+                        if act.get("reviewer"):
+                            parts.append(f"复核：{act['reviewer']}")
+                        print(f"    {idx}. {' | '.join(p for p in parts if p)}")
                 print()
                 break
 
@@ -591,17 +628,19 @@ def _ledger_update_status(ledger):
     for i, s in enumerate(ALL_STATUSES, 1):
         print(f"  {i}. {s}")
     new_choice = input("请选择新状态：").strip()
-    if new_choice.isdigit():
-        idx = int(new_choice) - 1
-        if 0 <= idx < len(ALL_STATUSES):
-            if ledger.update_status(item_id, ALL_STATUSES[idx]):
-                print(color_text(f"已更新为：{ALL_STATUSES[idx]}", "green"))
-            else:
-                print(color_text("更新失败。", "red"))
-        else:
-            print(color_text("无效选项。", "red"))
-    else:
+    if not new_choice.isdigit():
         print(color_text("未做更改。", "yellow"))
+        return
+    idx = int(new_choice) - 1
+    if not (0 <= idx < len(ALL_STATUSES)):
+        print(color_text("无效选项。", "red"))
+        return
+    note = input("处置备注（回车跳过）：").strip() or None
+    reviewer = input("复核人（回车跳过）：").strip() or None
+    if ledger.update_status(item_id, ALL_STATUSES[idx], note=note, reviewer=reviewer):
+        print(color_text(f"已更新为：{ALL_STATUSES[idx]}", "green"))
+    else:
+        print(color_text("更新失败。", "red"))
 
 
 def _ledger_bulk_update(ledger):
@@ -668,6 +707,94 @@ def _ledger_bulk_update(ledger):
             print(color_text(f"已更新 {updated} 条记录为：{ALL_STATUSES[idx]}", "green"))
         else:
             print(color_text("无效选项。", "red"))
+
+
+def _ledger_append_action(ledger):
+    print()
+    item_id = input("请输入要追加记录的台账序号：").strip()
+    if not item_id.isdigit():
+        print(color_text("请输入有效数字。", "red"))
+        return
+    item_id = int(item_id)
+    current = None
+    for item in ledger.items:
+        if item["id"] == item_id:
+            current = item
+            break
+    if not current:
+        print(color_text(f"未找到序号 {item_id} 的记录。", "red"))
+        return
+
+    print(f"当前状态：{status_label(current.get('status', STATUS_PENDING))}")
+    history = current.get("history", [])
+    if history:
+        print(f"已有处置记录：{len(history)} 条")
+
+    print()
+    print("可追加的动作类型：")
+    action_options = ALL_STATUSES + ["追加备注", "合规复核"]
+    for i, a in enumerate(action_options, 1):
+        print(f"  {i}. {a}")
+    act_choice = input("请选择动作类型（默认1 待核实）：").strip() or "1"
+    if not act_choice.isdigit():
+        print(color_text("无效选项。", "red"))
+        return
+    act_idx = int(act_choice) - 1
+    if not (0 <= act_idx < len(action_options)):
+        print(color_text("无效选项。", "red"))
+        return
+    action_type = action_options[act_idx]
+    note = input("处置说明/整改备注（回车跳过）：").strip() or None
+    reviewer = input("复核人（回车跳过）：").strip() or None
+
+    if ledger.append_action(item_id, action_type, note=note, reviewer=reviewer):
+        print(color_text(f"已追加记录：{action_type}", "green"))
+    else:
+        print(color_text("追加失败。", "red"))
+    print()
+
+
+def _ledger_view_propagation_groups(ledger):
+    print()
+    dept_filter = input("按营业部筛选传播事件组（回车跳过）：").strip() or None
+    groups = ledger.get_propagation_groups(department=dept_filter)
+    if not groups:
+        print(color_text("暂无传播事件组。", "yellow"))
+        print()
+        return
+
+    print()
+    print(color_text(f"共 {len(groups)} 个传播事件组：", "yellow"))
+    print("-" * 70)
+    for g in groups:
+        summary = ledger.get_group_summary(g["id"])
+        status_parts = []
+        for st, cnt in summary["status_distribution"].items():
+            status_parts.append(f"{st}:{cnt}")
+        print(f"  [#{g['id']}] {g['file_count']}个文件/重复{g['repeat_count']}次 | {g['content'][:40]}...")
+        print(f"        文件：{'、'.join(g['files'])}")
+        print(f"        发言人：{'、'.join(g['speakers'])}")
+        print(f"        处置进度：{' / '.join(status_parts) if status_parts else '-'}")
+    print("-" * 70)
+    print()
+    detail = input("输入事件组编号查看明细（回车返回）：").strip()
+    if detail.isdigit():
+        gid = int(detail)
+        summary = ledger.get_group_summary(gid)
+        if summary:
+            print()
+            g = summary["group"]
+            print(color_text(f"--- 传播事件组 #{gid} 明细 ---", "bold"))
+            print(f"  原句：{g['content']}")
+            print(f"  涉及文件：{g['file_count']} 个 | 重复次数：{g['repeat_count']}")
+            print(f"  文件列表：{'、'.join(g['files'])}")
+            print(f"  发言人：{'、'.join(g['speakers'])}")
+            print()
+            print(f"  明细记录（{len(summary['members'])}条）：")
+            for m in summary["members"]:
+                print(f"    [{m['id']}] {status_label(m.get('status', STATUS_PENDING))} "
+                      f"{m.get('source_detail', '-')} / {m.get('manager', '-')}")
+            print()
 
 
 def run_report_generation(session_info):
@@ -788,13 +915,24 @@ def _run_trend_report(session_info):
     days_input = input("请输入统计天数（默认7）：").strip()
     days = int(days_input) if days_input.isdigit() else 7
 
+    print()
+    print("专项筛选（回车跳过，使用全量数据）：")
+    filter_dept = input("  按营业部筛选（回车跳过）：").strip() or None
+    filter_mgr = input("  按客户经理筛选（回车跳过）：").strip() or None
+
     ledger = session_info.get("ledger")
 
     print()
     print("正在生成周会复盘材料...")
     print()
 
-    report = generate_trend_report(dept_name, days=days, ledger=ledger)
+    report = generate_trend_report(
+        dept_name,
+        days=days,
+        ledger=ledger,
+        filter_department=filter_dept,
+        filter_manager=filter_mgr,
+    )
 
     print(report)
     print()
@@ -816,7 +954,12 @@ def _run_trend_report(session_info):
     save = input("是否保存周会复盘材料？(y/n，默认n)：").strip().lower()
     if save == "y":
         date_str = datetime.now().strftime("%Y%m%d")
-        filename = f"合规周会复盘_{days}天_{date_str}.txt"
+        filter_suffix = ""
+        if filter_dept:
+            filter_suffix += f"_{filter_dept}"
+        if filter_mgr:
+            filter_suffix += f"_{filter_mgr}"
+        filename = f"合规周会复盘_{days}天{filter_suffix}_{date_str}.txt"
         try:
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(report)

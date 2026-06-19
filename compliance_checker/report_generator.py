@@ -1,5 +1,6 @@
 from datetime import datetime
 from collections import Counter
+from .ledger import STATUS_PENDING, STATUS_REMINDED, STATUS_RECTIFIED
 
 
 def _is_rumor_performed(rumor_data):
@@ -123,7 +124,8 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
             for r in rumor_list:
                 risk_label = "高风险" if r["highest_risk"] == "high" else "中风险"
                 dept = r.get("department", "-")
-                status_str = _lookup_ledger_status(ledger, r.get("content", ""), "舆情", r.get("manager")) if ledger else "待核实"
+                status_str = _lookup_ledger_status(ledger, r.get("content", ""), "舆情", r.get("manager"), r.get("source")) if ledger else "待核实"
+                last_action_str = _format_last_action(ledger, r.get("content", ""), "舆情", r.get("manager"), r.get("source"))
                 report_lines.append(
                     f"  {issue_num}. [{risk_label}][{status_str}] {dept} / {r['source']} / {r['manager']} "
                     f"({r['time'].strftime('%m-%d %H:%M')})"
@@ -132,6 +134,8 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
                     report_lines.append(f"     涉及标的：{r['stock']}")
                 report_lines.append(f"     内容摘要：{r['content'][:50]}...")
                 report_lines.append(f"     涉及类型：{'、'.join(r['risk_categories'])}")
+                if last_action_str:
+                    report_lines.append(f"     最近处理：{last_action_str}")
                 issue_num += 1
 
         if chat_performed and chat_agg and chat_agg.get("violations"):
@@ -140,14 +144,18 @@ def generate_daily_report(business_department, rumor_data, chat_data, check_date
                 risk_label = "高风险" if v["highest_risk"] == "high" else "中风险"
                 categories = "、".join([m["category"] for m in v["sensitive_matches"]])
                 loc = f"第{v['line_number']}行"
-                if v.get("file_name"):
-                    loc = f"{v['file_name']} / {loc}"
-                status_str = _lookup_ledger_status(ledger, v.get("content", ""), "群聊", v.get("speaker")) if ledger else "待核实"
+                v_file = v.get("file_name", "")
+                if v_file:
+                    loc = f"{v_file} / {loc}"
+                status_str = _lookup_ledger_status(ledger, v.get("content", ""), "群聊", v.get("speaker"), v_file) if ledger else "待核实"
+                last_action_str = _format_last_action(ledger, v.get("content", ""), "群聊", v.get("speaker"), v_file)
                 report_lines.append(
                     f"  {issue_num}. [{risk_label}][{status_str}] {loc} - {v['speaker']} ({v['timestamp']})"
                 )
                 report_lines.append(f"     违规内容：{v['content'][:50]}...")
                 report_lines.append(f"     涉及类型：{categories}")
+                if last_action_str:
+                    report_lines.append(f"     最近处理：{last_action_str}")
                 issue_num += 1
 
     report_lines.append("-" * 60)
@@ -288,23 +296,58 @@ def generate_short_report(business_department, rumor_data, chat_data, check_date
     return report
 
 
-def _lookup_ledger_status(ledger, content, source_type, manager=None):
+def _find_ledger_item(ledger, content, source_type, manager=None, source_detail=None):
     if not ledger or not content:
-        return "待核实"
+        return None
     content_stripped = content.strip()
     for item in ledger.items:
         if item.get("content", "").strip() == content_stripped:
             if item.get("source") == source_type:
                 if manager and item.get("manager", "-") != manager:
                     continue
-                return item.get("status", "待核实")
+                if source_detail and item.get("source_detail", "-") != source_detail:
+                    continue
+                return item
     for item in ledger.items:
         if item.get("content", "").strip() == content_stripped:
-            return item.get("status", "待核实")
-    return "待核实"
+            if item.get("source") == source_type:
+                if manager and item.get("manager", "-") != manager:
+                    continue
+                return item
+    for item in ledger.items:
+        if item.get("content", "").strip() == content_stripped:
+            return item
+    return None
 
 
-def generate_trend_report(business_department, days=7, historical_data=None, ledger=None):
+def _format_last_action(ledger, content, source_type, manager=None, source_detail=None):
+    item = _find_ledger_item(ledger, content, source_type, manager, source_detail)
+    if not item:
+        return None
+    history = item.get("history", [])
+    if not history:
+        return None
+    last = history[-1]
+    parts = []
+    if last.get("time"):
+        parts.append(last["time"])
+    if last.get("action_type"):
+        parts.append(last["action_type"])
+    if last.get("note"):
+        parts.append(f"备注：{last['note']}")
+    if last.get("reviewer"):
+        parts.append(f"复核：{last['reviewer']}")
+    return " | ".join(parts) if parts else None
+
+
+def _lookup_ledger_status(ledger, content, source_type, manager=None, source_detail=None):
+    item = _find_ledger_item(ledger, content, source_type, manager, source_detail)
+    if not item:
+        return "待核实"
+    return item.get("status", "待核实")
+
+
+def generate_trend_report(business_department, days=7, historical_data=None, ledger=None, filter_department=None, filter_manager=None):
     if historical_data is None:
         from .sample_data import generate_historical_rumors
         historical_data = generate_historical_rumors(days)
@@ -312,9 +355,18 @@ def generate_trend_report(business_department, days=7, historical_data=None, led
     if not historical_data:
         return "无历史数据可供趋势分析。"
 
+    filter_scope_parts = []
+    if filter_department:
+        filter_scope_parts.append(f"营业部：{filter_department}")
+    if filter_manager:
+        filter_scope_parts.append(f"客户经理：{filter_manager}")
+    filter_scope_str = f"（专项：{'；'.join(filter_scope_parts)}）" if filter_scope_parts else ""
+
     lines = []
-    lines.append(f"【{business_department} 合规风险周会复盘】")
+    lines.append(f"【{business_department} 合规风险周会复盘{filter_scope_str}】")
     lines.append(f"统计范围：近 {len(historical_data)} 天")
+    if filter_scope_parts:
+        lines.append(f"筛选条件：{'；'.join(filter_scope_parts)}")
     lines.append("=" * 60)
 
     lines.append("")
@@ -342,6 +394,8 @@ def generate_trend_report(business_department, days=7, historical_data=None, led
     manager_counter = Counter()
     for d in historical_data:
         for mgr in d.get("managers", []):
+            if filter_manager and filter_manager.lower() not in mgr.lower():
+                continue
             manager_counter[mgr] += 1
     repeat_managers = [(m, c) for m, c in manager_counter.most_common() if c > 1]
     if repeat_managers:
@@ -368,28 +422,58 @@ def generate_trend_report(business_department, days=7, historical_data=None, led
     lines.append("四、待整改台账")
     lines.append("-" * 60)
     if ledger:
-        pending_summary = ledger.get_pending_summary()
-        lines.append(f"  待核实：{pending_summary['pending_count']} 项")
-        lines.append(f"  已提醒未整改：{pending_summary['reminded_count']} 项")
-        if pending_summary["by_department"]:
+        filtered_items = ledger.items[:]
+        if filter_department:
+            filtered_items = [i for i in filtered_items if filter_department.lower() in i.get("department", "").lower()]
+        if filter_manager:
+            filtered_items = [i for i in filtered_items if filter_manager.lower() in i.get("manager", "").lower()]
+
+        pending = [i for i in filtered_items if i.get("status") == STATUS_PENDING]
+        reminded = [i for i in filtered_items if i.get("status") == STATUS_REMINDED]
+        rectified = [i for i in filtered_items if i.get("status") == STATUS_RECTIFIED]
+
+        lines.append(f"  待核实：{len(pending)} 项")
+        lines.append(f"  已提醒未整改：{len(reminded)} 项")
+        lines.append(f"  已整改：{len(rectified)} 项")
+
+        dept_dist = {}
+        mgr_dist = {}
+        for item in pending + reminded:
+            d = item.get("department", "-")
+            dept_dist[d] = dept_dist.get(d, 0) + 1
+            m = item.get("manager", "-")
+            mgr_dist[m] = mgr_dist.get(m, 0) + 1
+
+        if dept_dist:
             lines.append("")
             lines.append("  按营业部分布：")
-            for dept, cnt in sorted(pending_summary["by_department"].items(), key=lambda x: x[1], reverse=True):
+            for dept, cnt in sorted(dept_dist.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"    - {dept}：{cnt} 项")
-        if pending_summary["by_manager"]:
+        if mgr_dist:
             lines.append("")
             lines.append("  按经理分布：")
-            for mgr, cnt in sorted(pending_summary["by_manager"].items(), key=lambda x: x[1], reverse=True):
+            for mgr, cnt in sorted(mgr_dist.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"    - {mgr}：{cnt} 项")
-        overdue = ledger.get_overdue_items(overdue_days=3)
-        if overdue:
+
+        overdue = [i for i in filtered_items if i.get("status", "") in [STATUS_PENDING, STATUS_REMINDED]]
+        if filter_department or filter_manager:
+            overdue_lines = overdue[:10]
+        else:
+            from datetime import timedelta
+            cutoff = datetime.now() - timedelta(days=3)
+            cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            overdue_lines = [i for i in overdue if i.get("added_at", "") < cutoff_str][:10]
+
+        if overdue_lines:
             lines.append("")
-            lines.append(f"  超期未核实（录入超过3天仍待核实）：{len(overdue)} 项")
-            for item in overdue[:10]:
+            scope_note = "筛选条件下待处理" if (filter_department or filter_manager) else "超期3天未处理"
+            lines.append(f"  {scope_note}（{len(overdue_lines)} 条）：")
+            for item in overdue_lines:
                 dept = item.get("department", "-")
                 mgr = item.get("manager", "-")
+                st = item.get("status", STATUS_PENDING)
                 preview = item.get("content", "")[:30] + "..."
-                lines.append(f"    [{item['id']}] {dept} / {mgr} / {preview}")
+                lines.append(f"    [{item['id']}] [{st}] {dept} / {mgr} / {preview}")
     else:
         lines.append("  暂无台账数据")
 
@@ -408,9 +492,9 @@ def generate_trend_report(business_department, days=7, historical_data=None, led
     elif trend == "下降":
         suggestions.append("高风险数量呈下降趋势，继续保持现有合规管理力度")
     if ledger:
-        pending_count = ledger.get_pending_summary()["pending_count"]
-        if pending_count > 0:
-            suggestions.append(f"当前有 {pending_count} 项待核实风险，建议尽快完成核实处置")
+        total_pending = len([i for i in ledger.items if i.get("status") == STATUS_PENDING])
+        if total_pending > 0:
+            suggestions.append(f"当前有 {total_pending} 项待核实风险，建议尽快完成核实处置")
     if not suggestions:
         suggestions.append("整体合规态势平稳，持续日常监控即可")
     for i, s in enumerate(suggestions, 1):
@@ -419,6 +503,6 @@ def generate_trend_report(business_department, days=7, historical_data=None, led
     lines.append("")
     lines.append("=" * 60)
     lines.append(f"报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"报告类型：周会复盘材料")
+    lines.append(f"报告类型：周会复盘材料{'（专项版本）' if filter_scope_parts else ''}")
 
     return "\n".join(lines)
